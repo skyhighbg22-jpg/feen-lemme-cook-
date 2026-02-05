@@ -1,6 +1,6 @@
 {
   "name": "feen",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Feen - Secure API Key Sharing SaaS Platform",
   "author": "Yethikrishna R <yethikrishnarcvn7a@gmail.com>",
   "license": "MIT",
@@ -20,6 +20,7 @@
     "test:coverage": "vitest --coverage",
     "format": "prettier --write .",
     "typecheck": "tsc --noEmit",
+    "type-check": "tsc --noEmit",
     "worker": "tsx src/workers/index.ts"
   },
   "dependencies": {

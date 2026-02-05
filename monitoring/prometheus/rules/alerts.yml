@@ -1,0 +1,232 @@
+# ==========================================
+# Feen - Prometheus Alert Rules
+# ==========================================
+
+groups:
+  # ==========================================
+  # Application Alerts
+  # ==========================================
+  - name: feen-application
+    rules:
+      - alert: FeenAppDown
+        expr: up{job="feen-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Feen application is down"
+          description: "Feen application {{ $labels.instance }} has been down for more than 1 minute."
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="feen-app",status=~"5.."}[5m])) /
+          sum(rate(http_requests_total{job="feen-app"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is above 5% for the last 5 minutes (current: {{ $value | humanizePercentage }})."
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="feen-app"}[5m])) by (le)) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency detected"
+          description: "95th percentile latency is above 2 seconds (current: {{ $value | humanizeDuration }})."
+
+      - alert: HighRequestRate
+        expr: |
+          sum(rate(http_requests_total{job="feen-app"}[1m])) > 1000
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "High request rate"
+          description: "Request rate is above 1000 req/s for the last 5 minutes."
+
+  # ==========================================
+  # API Key & Token Alerts
+  # ==========================================
+  - name: feen-tokens
+    rules:
+      - alert: TokenRotationFailed
+        expr: |
+          increase(feen_token_rotation_failures_total[1h]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Token rotation failures detected"
+          description: "More than 5 token rotation failures in the last hour."
+
+      - alert: HighRateLimitTriggered
+        expr: |
+          increase(feen_rate_limit_exceeded_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rate limit triggers"
+          description: "More than 100 rate limit triggers in the last 5 minutes."
+
+      - alert: SuspiciousActivityDetected
+        expr: |
+          increase(feen_suspicious_activity_total[15m]) > 10
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Suspicious activity detected"
+          description: "More than 10 suspicious activity events in the last 15 minutes."
+
+  # ==========================================
+  # Database Alerts
+  # ==========================================
+  - name: feen-database
+    rules:
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL has been down for more than 1 minute."
+
+      - alert: PostgresHighConnections
+        expr: |
+          sum(pg_stat_activity_count) / pg_settings_max_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL connection usage high"
+          description: "PostgreSQL connection usage is above 80% (current: {{ $value | humanizePercentage }})."
+
+      - alert: PostgresSlowQueries
+        expr: |
+          rate(pg_stat_statements_seconds_total[5m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL slow queries detected"
+          description: "Average query time is above 1 second for the last 10 minutes."
+
+      - alert: PostgresReplicationLag
+        expr: |
+          pg_replication_lag > 60
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL replication lag"
+          description: "Replication lag is above 60 seconds (current: {{ $value }}s)."
+
+  # ==========================================
+  # Redis Alerts
+  # ==========================================
+  - name: feen-redis
+    rules:
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is down"
+          description: "Redis has been down for more than 1 minute."
+
+      - alert: RedisHighMemory
+        expr: |
+          redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis memory usage high"
+          description: "Redis memory usage is above 90% (current: {{ $value | humanizePercentage }})."
+
+      - alert: RedisHighConnections
+        expr: |
+          redis_connected_clients > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis high client connections"
+          description: "Redis has more than 500 connected clients."
+
+  # ==========================================
+  # Infrastructure Alerts
+  # ==========================================
+  - name: feen-infrastructure
+    rules:
+      - alert: HighCPUUsage
+        expr: |
+          100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is above 80% for instance {{ $labels.instance }}."
+
+      - alert: HighMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is above 90% for instance {{ $labels.instance }}."
+
+      - alert: HighDiskUsage
+        expr: |
+          (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High disk usage"
+          description: "Disk usage is above 85% for {{ $labels.mountpoint }} on {{ $labels.instance }}."
+
+      - alert: ContainerRestarting
+        expr: |
+          increase(container_restart_count[1h]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container restarting frequently"
+          description: "Container {{ $labels.name }} has restarted more than 3 times in the last hour."
+
+  # ==========================================
+  # Queue Alerts
+  # ==========================================
+  - name: feen-queues
+    rules:
+      - alert: WebhookQueueBacklog
+        expr: |
+          aws_sqs_approximate_number_of_messages_visible{queue_name=~".*webhooks.*"} > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Webhook queue backlog"
+          description: "Webhook queue has more than 1000 pending messages."
+
+      - alert: DeadLetterQueueMessages
+        expr: |
+          aws_sqs_approximate_number_of_messages_visible{queue_name=~".*dlq.*"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Messages in DLQ"
+          description: "There are {{ $value }} messages in the dead letter queue {{ $labels.queue_name }}."
