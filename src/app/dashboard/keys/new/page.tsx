@@ -35,6 +35,7 @@ const providers = [
   { value: "TOGETHER", label: "Together AI", placeholder: "Your Together key" },
   { value: "REPLICATE", label: "Replicate", placeholder: "r8_..." },
   { value: "HUGGINGFACE", label: "Hugging Face", placeholder: "hf_..." },
+  { value: "BYTEZ", label: "Bytez", placeholder: "Your Bytez key" },
   { value: "CUSTOM", label: "Custom Provider", placeholder: "Your API key" },
 ];
 

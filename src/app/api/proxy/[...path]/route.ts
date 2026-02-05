@@ -13,6 +13,7 @@ const PROVIDER_ENDPOINTS: Record<string, string> = {
   TOGETHER: "https://api.together.xyz",
   REPLICATE: "https://api.replicate.com",
   HUGGINGFACE: "https://api-inference.huggingface.co",
+  BYTEZ: "https://api.bytez.ai/v2",
 };
 
 async function handleProxy(
@@ -137,6 +138,14 @@ async function handleProxy(
     if (provider === "ANTHROPIC") {
       headers.set("x-api-key", actualApiKey);
       headers.set("anthropic-version", "2023-06-01");
+    }
+
+    // Forward Bytez-specific headers (Provider-Key for closed-source models)
+    if (provider === "BYTEZ") {
+      const providerKey = request.headers.get("provider-key");
+      if (providerKey) {
+        headers.set("Provider-Key", providerKey);
+      }
     }
 
     // Forward the request
