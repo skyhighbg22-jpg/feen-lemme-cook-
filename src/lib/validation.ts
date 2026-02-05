@@ -53,6 +53,7 @@ export const ApiProviderSchema = z.enum([
   "TOGETHER",
   "REPLICATE",
   "HUGGINGFACE",
+  "BYTEZ",
   "CUSTOM",
 ]);
 

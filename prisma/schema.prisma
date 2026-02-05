@@ -172,6 +172,7 @@ enum ApiProvider {
   TOGETHER
   REPLICATE
   HUGGINGFACE
+  BYTEZ
   CUSTOM
 }
 
