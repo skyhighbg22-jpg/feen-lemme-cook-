@@ -2,19 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { decrypt, hash } from "@/lib/crypto";
 import { checkRateLimit } from "@/lib/redis";
-
-const PROVIDER_ENDPOINTS: Record<string, string> = {
-  OPENAI: "https://api.openai.com",
-  ANTHROPIC: "https://api.anthropic.com",
-  GOOGLE: "https://generativelanguage.googleapis.com",
-  COHERE: "https://api.cohere.ai",
-  MISTRAL: "https://api.mistral.ai",
-  GROQ: "https://api.groq.com/openai",
-  TOGETHER: "https://api.together.xyz",
-  REPLICATE: "https://api.replicate.com",
-  HUGGINGFACE: "https://api-inference.huggingface.co",
-  BYTEZ: "https://api.bytez.ai/v2",
-};
+import { PROVIDER_ENDPOINTS, getFastestProvider, recordLatency } from "@/lib/routing";
+import { ApiProvider } from "@prisma/client";
 
 async function handleProxy(
   request: NextRequest,
@@ -111,53 +100,103 @@ async function handleProxy(
       );
     }
 
-    // Get the provider endpoint
-    const provider = sharedKey.apiKey.provider;
-    const baseUrl = PROVIDER_ENDPOINTS[provider];
+    const requestText = await request.text();
+    let bodyJSON: any = {};
+    try {
+      bodyJSON = JSON.parse(requestText);
+    } catch (e) {}
 
-    if (!baseUrl) {
-      return NextResponse.json(
-        { error: "Unsupported provider" },
-        { status: 400 }
-      );
-    }
+    const requestedModel = bodyJSON.model;
 
-    // Decrypt the actual API key
-    const actualApiKey = decrypt(sharedKey.apiKey.encryptedKey);
+    // Find all active API keys available to this user/team
+    const availableApiKeys = await db.apiKey.findMany({
+      where: {
+        OR: [
+          { userId: sharedKey.ownerId },
+          { teamId: sharedKey.apiKey.teamId },
+        ],
+        isActive: true,
+      },
+    });
 
-    // Build the proxy URL
-    const proxyPath = path.join("/");
-    const proxyUrl = `${baseUrl}/${proxyPath}`;
+    // Determine the best provider based on latency
+    const availableProviders = availableApiKeys.map((k) => k.provider);
+    const bestProvider = requestedModel 
+      ? await getFastestProvider(requestedModel, availableProviders)
+      : sharedKey.apiKey.provider;
 
-    // Clone and modify headers
-    const headers = new Headers();
-    headers.set("Authorization", `Bearer ${actualApiKey}`);
-    headers.set("Content-Type", request.headers.get("content-type") || "application/json");
+    // Sort API keys by preference (best provider first, then the one linked to sharedKey)
+    const sortedApiKeys = [...availableApiKeys].sort((a, b) => {
+      if (a.provider === bestProvider) return -1;
+      if (b.provider === bestProvider) return 1;
+      if (a.id === sharedKey.apiKeyId) return -1;
+      if (b.id === sharedKey.apiKeyId) return 1;
+      return 0;
+    });
 
-    // Add Anthropic-specific headers
-    if (provider === "ANTHROPIC") {
-      headers.set("x-api-key", actualApiKey);
-      headers.set("anthropic-version", "2023-06-01");
-    }
+    let proxyResponse: Response | null = null;
+    let selectedApiKey = sortedApiKeys[0];
+    let finalProvider = selectedApiKey.provider;
 
-    // Forward Bytez-specific headers (Provider-Key for closed-source models)
-    if (provider === "BYTEZ") {
-      const providerKey = request.headers.get("provider-key");
-      if (providerKey) {
-        headers.set("Provider-Key", providerKey);
+    // Try providers in order (Fallback Logic)
+    for (const apiKey of sortedApiKeys) {
+      selectedApiKey = apiKey;
+      finalProvider = apiKey.provider;
+      const baseUrl = PROVIDER_ENDPOINTS[finalProvider];
+      if (!baseUrl) continue;
+
+      const actualApiKey = decrypt(apiKey.encryptedKey);
+      const proxyPath = path.join("/");
+      const proxyUrl = `${baseUrl}/${proxyPath}`;
+
+      const headers = new Headers();
+      headers.set("Authorization", `Bearer ${actualApiKey}`);
+      headers.set("Content-Type", request.headers.get("content-type") || "application/json");
+
+      if (finalProvider === ApiProvider.ANTHROPIC) {
+        headers.set("x-api-key", actualApiKey);
+        headers.set("anthropic-version", "2023-06-01");
+      }
+
+      if (finalProvider === ApiProvider.BYTEZ) {
+        const providerKey = request.headers.get("provider-key");
+        if (providerKey) {
+          headers.set("Provider-Key", providerKey);
+        }
+      }
+
+      try {
+        proxyResponse = await fetch(proxyUrl, {
+          method: request.method,
+          headers,
+          body: request.method !== "GET" && request.method !== "HEAD"
+            ? requestText
+            : undefined,
+        });
+
+        if (proxyResponse.ok) {
+          break; // Success!
+        } else {
+          console.warn(`Provider ${finalProvider} failed with status ${proxyResponse.status}`);
+        }
+      } catch (error) {
+        console.error(`Error with provider ${finalProvider}:`, error);
       }
     }
 
-    // Forward the request
-    const proxyResponse = await fetch(proxyUrl, {
-      method: request.method,
-      headers,
-      body: request.method !== "GET" && request.method !== "HEAD"
-        ? await request.text()
-        : undefined,
-    });
+    if (!proxyResponse) {
+      return NextResponse.json(
+        { error: "All available providers failed" },
+        { status: 502 }
+      );
+    }
 
     const latencyMs = Date.now() - startTime;
+
+    // Record latency for the selected provider
+    if (proxyResponse.ok) {
+      await recordLatency(finalProvider, latencyMs);
+    }
 
     // Parse response for token counting (if applicable)
     let requestTokens = null;
@@ -183,11 +222,12 @@ async function handleProxy(
     // Log usage asynchronously
     db.usageLog.create({
       data: {
-        apiKeyId: sharedKey.apiKeyId,
+        apiKeyId: selectedApiKey.id,
         sharedKeyId: sharedKey.id,
         userId: sharedKey.ownerId,
-        provider,
-        endpoint: proxyPath,
+        provider: finalProvider,
+        model: requestedModel,
+        endpoint: path.join("/"),
         method: request.method,
         statusCode: proxyResponse.status,
         requestTokens,
@@ -210,13 +250,14 @@ async function handleProxy(
 
     // Update API key last used
     db.apiKey.update({
-      where: { id: sharedKey.apiKeyId },
+      where: { id: selectedApiKey.id },
       data: { lastUsedAt: new Date() },
     }).catch(console.error);
 
     // Forward the response
     const responseHeaders = new Headers(proxyResponse.headers);
     responseHeaders.set("X-Feen-Latency", latencyMs.toString());
+    responseHeaders.set("X-Feen-Provider", finalProvider);
     responseHeaders.set("X-RateLimit-Limit", sharedKey.rateLimit.toString());
     responseHeaders.set("X-RateLimit-Remaining", rateLimitResult.remaining.toString());
 

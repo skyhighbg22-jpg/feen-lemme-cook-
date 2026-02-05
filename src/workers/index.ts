@@ -11,6 +11,9 @@
 import { Worker, Queue, Job } from "bullmq";
 import { db } from "@/lib/db";
 import Redis from "ioredis";
+import { ApiProvider } from "@prisma/client";
+import { probeProvider } from "@/lib/routing";
+import { decrypt } from "@/lib/crypto";
 
 const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
 const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
@@ -19,6 +22,7 @@ const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
 const usageQueue = new Queue("usage", { connection });
 const notificationQueue = new Queue("notifications", { connection });
 const cleanupQueue = new Queue("cleanup", { connection });
+const latencyQueue = new Queue("latency", { connection });
 
 // Usage aggregation worker
 const usageWorker = new Worker(
@@ -80,7 +84,40 @@ const cleanupWorker = new Worker(
   { connection }
 );
 
+// Latency worker
+const latencyWorker = new Worker(
+  "latency",
+  async (job: Job) => {
+    const { type } = job.data;
+
+    if (type === "probe_all") {
+      await probeAllProviders();
+    }
+  },
+  { connection }
+);
+
 // Job implementations
+
+async function probeAllProviders() {
+  console.log("Probing all providers for latency...");
+  const providers = Object.values(ApiProvider);
+
+  for (const provider of providers) {
+    if (provider === ApiProvider.CUSTOM) continue;
+
+    // Find an active key to use for probing
+    const apiKey = await db.apiKey.findFirst({
+      where: { provider, isActive: true },
+      orderBy: { lastUsedAt: "desc" },
+    });
+
+    if (apiKey) {
+      const decryptedKey = decrypt(apiKey.encryptedKey);
+      await probeProvider(provider, decryptedKey);
+    }
+  }
+}
 
 async function aggregateDailyUsage(date: string) {
   console.log(`Aggregating usage for ${date}`);
@@ -171,6 +208,15 @@ async function scheduleRecurringJobs() {
     }
   );
 
+  // Schedule latency probing every 60 seconds
+  await latencyQueue.add(
+    "latency-probing",
+    { type: "probe_all" },
+    {
+      repeat: { pattern: "* * * * *" }, // Every minute
+    }
+  );
+
   console.log("Scheduled recurring jobs");
 }
 
@@ -184,5 +230,6 @@ process.on("SIGTERM", async () => {
   await usageWorker.close();
   await notificationWorker.close();
   await cleanupWorker.close();
+  await latencyWorker.close();
   process.exit(0);
 });
