@@ -407,7 +407,7 @@ export function OnboardingFlow({ userName, onComplete }: OnboardingProps) {
                   <div className="p-4 rounded-lg border">
                     <h4 className="font-medium mb-1">Documentation</h4>
                     <p className="text-sm text-muted-foreground">
-                      Learn more about Feen's features
+                      Learn more about Feen&apos;s features
                     </p>
                   </div>
                   <div className="p-4 rounded-lg border">
